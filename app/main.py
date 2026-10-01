@@ -7,8 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import config
+from .casefiles import get_case_file, submit_case_file, verify_case_file
 from .db import db_session, init_db, row_to_dict
-from .schemas import ApproveIn, CorrectionIn, EventIn, SampleIn, TransferBatchIn
+from .schemas import ApproveIn, CaseFileIn, CorrectionIn, EventIn, SampleIn, TransferBatchIn
 from .service import (
     DomainError,
     approve_storage,
@@ -43,8 +44,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="样本交接链核验服务",
-    description="环境检测机构样本保管链（Chain of Custody）登记、事件核验、入库核定与版本化复核",
-    version="1.3.0",
+    description="环境检测机构样本保管链（Chain of Custody）登记、事件核验、入库核定、版本化复核与案卷封存",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -239,6 +240,40 @@ def list_corrections_api(sample_code: str) -> dict[str, Any]:
     with db_session() as conn:
         items = list_corrections(conn, sample_code)
     return {"sample_code": sample_code, "total": len(items), "items": items}
+
+
+# --------------------------------------------------------------------------- 案卷封存（同一抽检多份样本归档）
+
+@app.post(f"{API_PREFIX}/case-files", tags=["case-files"], status_code=201)
+def submit_case_file_api(data: CaseFileIn) -> JSONResponse:
+    """同一抽检多份样本保管链版本封存为案卷（质控归档）。
+
+    * 至少两份不重复样本；可逐份指定非负历史版本，未指定者取封存事务中的最新版本；
+      整卷选取处于同一事务一致视图；
+    * 任一样本/版本不存在、编号重复 → 整卷失败（422 case_rejected，逐项给出），不留案卷；
+    * 案卷永久保存所选版本完整快照与按样本编号排序的清单，并生成可复算 SHA-256 摘要；
+      后续补录/纠错/核定不改写旧案卷；
+    * 同案卷号同请求重试 → 200 幂等返回原卷（即使最新版本已变化）；异请求 → 409 case_conflict；
+    * 并发提交由 BEGIN IMMEDIATE 串行化，按已提交结果判定。
+    """
+    with db_session(immediate=True) as conn:
+        case_file, idempotent = submit_case_file(conn, data)
+    return JSONResponse(status_code=200 if idempotent else 201,
+                        content={"case_file": case_file, "idempotent": idempotent})
+
+
+@app.get(f"{API_PREFIX}/case-files/{{case_id}}", tags=["case-files"])
+def get_case_file_api(case_id: str) -> dict[str, Any]:
+    """案卷查询：按样本编号排序的清单、各份所选版本完整快照与封存摘要。"""
+    with db_session() as conn:
+        return {"case_file": get_case_file(conn, case_id)}
+
+
+@app.get(f"{API_PREFIX}/case-files/{{case_id}}/verify", tags=["case-files"])
+def verify_case_file_api(case_id: str) -> dict[str, Any]:
+    """案卷核验：重算封存内容的 SHA-256 摘要并与封存摘要比对，返回一致与否（不静默改写）。"""
+    with db_session() as conn:
+        return verify_case_file(conn, case_id)
 
 
 # --------------------------------------------------------------------------- 入库核定

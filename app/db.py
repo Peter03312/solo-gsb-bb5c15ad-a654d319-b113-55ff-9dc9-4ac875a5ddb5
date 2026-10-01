@@ -85,8 +85,32 @@ CREATE TABLE IF NOT EXISTS sample_version (
     UNIQUE (sample_id, version)
 );
 
+-- 案卷封存（质控归档）：同一抽检的多份样本保管链版本封存为案卷。
+-- 案卷头与明细一经写入不再改写（后续补录/纠错/核定不影响旧案卷）；
+-- 明细永久保存所选版本的完整快照，按样本编号排序（item_index 即排序序号）。
+CREATE TABLE IF NOT EXISTS case_file (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id      TEXT NOT NULL UNIQUE,                  -- 全局唯一案卷号（同号重试幂等）
+    item_count   INTEGER NOT NULL,                      -- 卷内样本份数（>=2）
+    digest       TEXT NOT NULL,                         -- 封存内容的 SHA-256 摘要（可复算）
+    request_hash TEXT NOT NULL,                         -- 请求指纹（同号幂等/异内容冲突判定）
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS case_file_item (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_pk       INTEGER NOT NULL REFERENCES case_file(id),
+    sample_id     INTEGER NOT NULL REFERENCES sample(id),
+    sample_code   TEXT NOT NULL,                        -- 封存时样本编号（清单留痕）
+    version       INTEGER NOT NULL,                     -- 封存选取的样本版本号（非负）
+    item_index    INTEGER NOT NULL,                     -- 按样本编号排序后的序号（0 起）
+    snapshot_json TEXT NOT NULL,                        -- 所选版本的完整快照（封存时点固化）
+    UNIQUE (case_pk, sample_code)
+);
+
 CREATE INDEX IF NOT EXISTS idx_event_sample_time ON custody_event(sample_id, occurred_at, id);
 CREATE INDEX IF NOT EXISTS idx_version_sample ON sample_version(sample_id, version);
+CREATE INDEX IF NOT EXISTS idx_case_item_case ON case_file_item(case_pk, item_index);
 """
 
 # 依赖迁移新列的索引（须在旧库补列迁移完成后再创建）

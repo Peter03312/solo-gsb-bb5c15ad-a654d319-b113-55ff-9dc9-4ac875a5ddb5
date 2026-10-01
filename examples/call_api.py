@@ -312,6 +312,58 @@ def main() -> None:
     print("不存在的版本:", s, r.get("error", {}).get("code"),
           "| 当前最新版本:", r.get("error", {}).get("details", {}).get("current_version"))
 
+    # 14) 案卷封存：同一抽检的多份样本保管链版本归档为案卷（质控）
+    print("\n=== 案卷封存 ===")
+    case_body = {
+        "case_id": f"API-CASE-{run_id}",
+        "items": [
+            {"sample_code": code, "version": 0},   # 指定历史版本：登记基线
+            {"sample_code": code2},                # 未指定：取封存事务中的最新版本
+        ],
+    }
+    s, r = call("POST", "/case-files", case_body)
+    print(f"--- 案卷封存 [HTTP {s}] ---")
+    cf = r["case_file"]
+    print("案卷号:", cf["case_id"], "| 份数:", cf["item_count"], "| 封存时间:", cf["created_at"])
+    print("SHA-256 摘要:", cf["digest"])
+    for it in cf["items"]:
+        snap = it["snapshot"]
+        print(f"    [{it['index']}] {it['sample_code']} v{it['version']}"
+              f" 结论={snap['status']} 保管人={snap['current_custodian']}"
+              f" 时间线事件数={len(snap['timeline'])}")
+
+    # 14.1) 同案卷号同请求重试 → 200 幂等返回原卷（即使样本此后有了新版本）
+    s, r = call("POST", "/case-files", case_body)
+    print("\n同案卷号同请求重试:", s, "幂等:", r.get("idempotent"),
+          "| 摘要不变:", r["case_file"]["digest"] == cf["digest"])
+
+    # 14.2) 同案卷号异请求 → 409 case_conflict
+    s, r = call("POST", "/case-files", {
+        "case_id": f"API-CASE-{run_id}",
+        "items": [{"sample_code": code, "version": 1}, {"sample_code": code2}],
+    })
+    print("同案卷号异请求:", s, r.get("error", {}).get("code"))
+
+    # 14.3) 整卷失败：样本不存在 → 422 case_rejected 且不留案卷
+    s, r = call("POST", "/case-files", {
+        "case_id": f"API-CASE-BAD-{run_id}",
+        "items": [{"sample_code": code}, {"sample_code": "NO-SUCH-SAMPLE"}],
+    })
+    print("整卷失败（样本不存在）:", s, r.get("error", {}).get("code"),
+          "| 逐项:", [i["code"] for i in r.get("error", {}).get("details", {}).get("items", [])])
+    s, r = call("GET", f"/case-files/API-CASE-BAD-{run_id}")
+    print("失败不留案卷:", s, r.get("error", {}).get("code"))
+
+    # 14.4) 案卷查询：清单 + 各份完整快照 + 摘要
+    s, r = call("GET", f"/case-files/API-CASE-{run_id}")
+    print("\n案卷查询:", s, "| 清单:",
+          [(i["sample_code"], i["version"]) for i in r["case_file"]["items"]])
+
+    # 14.5) 案卷核验：重算摘要并返回一致与否（不静默改写）
+    s, r = call("GET", f"/case-files/API-CASE-{run_id}/verify")
+    print("案卷核验:", s, "| 一致:", r["consistent"],
+          "| 重算摘要:", r["recomputed_digest"][:16], "...")
+
 
 if __name__ == "__main__":
     main()
