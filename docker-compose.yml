@@ -1,0 +1,21 @@
+services:
+  chain-custody:
+    build: .
+    image: env-sample-custody:1.0.0
+    container_name: env-sample-custody
+    ports:
+      - "8080:8080"
+    environment:
+      # 启动时自动建表并写入 3 条演示样本（已有数据时跳过）；设为 false 则只建空库
+      SEED_ON_START: "true"
+      PORT: "8080"
+      LOCK_AFTER_APPROVAL: "true"
+    volumes:
+      # SQLite 数据持久化到宿主机，容器重建不丢数据
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
