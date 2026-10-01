@@ -159,3 +159,26 @@ class TransferBatchIn(BaseModel):
     from_custodian: str = Field(..., min_length=1, description="交出人")
     to_custodian: str = Field(..., min_length=1, description="接收人")
     items: list[BatchTransferItemIn] = Field(..., min_length=1, description="批内各份样本（至少一份）")
+
+
+class DossierItemIn(BaseModel):
+    """案卷中的一份样本：样本编号 + 可选的非负历史版本号（缺省取封存事务中的最新版本）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_code: str = Field(..., min_length=1, description="样本编号")
+    version: int | None = Field(None, ge=0, description="指定封存的非负历史版本号；缺省取最新版本")
+
+
+class DossierIn(BaseModel):
+    """同一抽检的多份样本保管链一次封存为案卷。
+
+    * 案卷号全局唯一；至少两份不重复样本（重复/不存在/版本不存在 → 整卷失败不留案卷）；
+    * 可逐份指定非负历史版本，未指定者取封存事务中的最新版本（同一数据库一致视图）；
+    * 同案卷号同内容重试幂等（即使最新版本已变化也返回原卷），异内容冲突。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dossier_id: str = Field(..., min_length=1, description="全局唯一案卷号，同号重试幂等")
+    items: list[DossierItemIn] = Field(..., min_length=2, description="卷内样本（至少两份，编号不重复）")

@@ -85,6 +85,29 @@ CREATE TABLE IF NOT EXISTS sample_version (
     UNIQUE (sample_id, version)
 );
 
+-- 案卷封存（质控）：同一抽检的多份样本保管链版本一次封存为不可变案卷。
+-- 案卷永久保存所选版本的完整快照与按样本编号排序的清单，并持有可复算的
+-- SHA-256 摘要；后续补录/纠错/核定不改变旧案卷。
+CREATE TABLE IF NOT EXISTS dossier (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    dossier_id    TEXT NOT NULL UNIQUE,                -- 全局唯一案卷号
+    item_count    INTEGER NOT NULL,                    -- 卷内样本份数（>=2）
+    digest        TEXT NOT NULL,                       -- 封存内容 SHA-256 摘要（可复算）
+    request_hash  TEXT NOT NULL,                       -- 封存请求指纹（同案卷号幂等/冲突判定）
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dossier_item (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    dossier_pk    INTEGER NOT NULL REFERENCES dossier(id),
+    sample_id     INTEGER NOT NULL REFERENCES sample(id),
+    sample_code   TEXT NOT NULL,                       -- 封存时样本编号（清单留痕）
+    version       INTEGER NOT NULL,                    -- 封存时选取的版本号（非负）
+    item_index    INTEGER NOT NULL,                    -- 按样本编号排序后的序号（0 起）
+    snapshot_json TEXT NOT NULL,                       -- 所选版本完整快照（永久保存）
+    UNIQUE (dossier_pk, sample_code)
+);
+
 CREATE INDEX IF NOT EXISTS idx_event_sample_time ON custody_event(sample_id, occurred_at, id);
 CREATE INDEX IF NOT EXISTS idx_version_sample ON sample_version(sample_id, version);
 """
@@ -95,6 +118,7 @@ POST_MIGRATION_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_correction_sample ON event_correction(sample_id, id)",
     "CREATE INDEX IF NOT EXISTS idx_event_batch ON custody_event(batch_id)",
     "CREATE INDEX IF NOT EXISTS idx_batch_item_batch ON transfer_batch_item(batch_pk, item_index)",
+    "CREATE INDEX IF NOT EXISTS idx_dossier_item_dossier ON dossier_item(dossier_pk, item_index)",
 ]
 
 # 旧库增量补列

@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse
 
 from . import config
 from .db import db_session, init_db, row_to_dict
-from .schemas import ApproveIn, CorrectionIn, EventIn, SampleIn, TransferBatchIn
+from .dossiers import get_dossier, submit_dossier, verify_dossier
+from .schemas import ApproveIn, CorrectionIn, DossierIn, EventIn, SampleIn, TransferBatchIn
 from .service import (
     DomainError,
     approve_storage,
@@ -44,7 +45,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="样本交接链核验服务",
     description="环境检测机构样本保管链（Chain of Custody）登记、事件核验、入库核定与版本化复核",
-    version="1.3.0",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -249,3 +250,36 @@ def approve_api(sample_code: str, data: ApproveIn) -> dict[str, Any]:
         result = approve_storage(conn, sample_code, data)
         sample = get_sample_or_404(conn, sample_code)
         return {"evaluation": _summary(result, dict(sample), conn), "approval": result["approval"]}
+
+
+# --------------------------------------------------------------------------- 案卷封存（同一抽检多份样本）
+
+@app.post(f"{API_PREFIX}/dossiers", tags=["dossiers"], status_code=201)
+def submit_dossier_api(data: DossierIn) -> JSONResponse:
+    """同一抽检的多份样本保管链封存为案卷。
+
+    * 至少两份不重复样本；可逐份指定非负历史版本，未指定者取封存事务中的最新版本
+      （整卷选取在同一事务的一致视图中完成）；
+    * 任一样本/版本不存在、编号重复 → 整卷失败且不留案卷；
+    * 案卷永久保存所选版本完整快照与按样本编号排序的清单，并生成可复算 SHA-256 摘要；
+    * 同案卷号同内容重试 → 200 幂等返回原卷（即使最新版本已变化）；异内容 → 409 dossier_conflict；
+    * 并发提交由 BEGIN IMMEDIATE 串行化，遵循已提交结果。
+    """
+    with db_session(immediate=True) as conn:
+        dossier, idempotent = submit_dossier(conn, data)
+    return JSONResponse(status_code=200 if idempotent else 201,
+                        content={"dossier": dossier, "idempotent": idempotent})
+
+
+@app.get(f"{API_PREFIX}/dossiers/{{dossier_id}}", tags=["dossiers"])
+def get_dossier_api(dossier_id: str) -> dict[str, Any]:
+    """案卷查询：按样本编号排序的清单、各份所选版本完整快照与封存摘要。"""
+    with db_session() as conn:
+        return {"dossier": get_dossier(conn, dossier_id)}
+
+
+@app.post(f"{API_PREFIX}/dossiers/{{dossier_id}}/verify", tags=["dossiers"])
+def verify_dossier_api(dossier_id: str) -> dict[str, Any]:
+    """案卷核验：按封存内容重算 SHA-256 摘要并返回一致与否（只读，不静默改写）。"""
+    with db_session() as conn:
+        return verify_dossier(conn, dossier_id)

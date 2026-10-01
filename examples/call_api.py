@@ -312,6 +312,68 @@ def main() -> None:
     print("不存在的版本:", s, r.get("error", {}).get("code"),
           "| 当前最新版本:", r.get("error", {}).get("details", {}).get("current_version"))
 
+    # 14) 案卷封存：同一抽检的多份样本保管链版本一次封存为不可变案卷
+    print("\n=== 案卷封存 ===")
+    # 14.1) 封存：code 指定历史版本 0（登记基线），code2 缺省取封存事务中的最新版本
+    dossier_id = f"API-DOSSIER-{run_id}"
+    dossier_body = {
+        "dossier_id": dossier_id,
+        "items": [
+            {"sample_code": code2},                 # 未指定版本 → 取最新
+            {"sample_code": code, "version": 0},    # 指定非负历史版本
+        ],
+    }
+    s, r = call("POST", "/dossiers", dossier_body)
+    d = r.get("dossier", {})
+    print(f"--- 案卷封存 [HTTP {s}] 案卷号={d.get('dossier_id')} 份数={d.get('item_count')} ---")
+    print("摘要:", d.get("digest"))
+    for it in d.get("items", []):
+        print(f"    [{it['index']}] {it['sample_code']} @ v{it['version']}"
+              f" 结论={it['snapshot']['status']} 保管人={it['snapshot']['current_custodian']}")
+
+    # 14.2) 查询案卷：清单（按样本编号排序）、各份完整快照与摘要
+    s, r = call("GET", f"/dossiers/{dossier_id}")
+    print(f"\n--- 案卷查询 [HTTP {s}] ---")
+    print("清单:", [(it["sample_code"], it["version"]) for it in r["dossier"]["items"]])
+
+    # 14.3) 核验：重算摘要并返回一致与否（只读，不改写）
+    s, r = call("POST", f"/dossiers/{dossier_id}/verify")
+    print(f"--- 案卷核验 [HTTP {s}] 一致={r.get('match')} ---")
+    print("留存摘要:", r.get("stored_digest"))
+    print("重算摘要:", r.get("recomputed_digest"))
+
+    # 14.4) 同案卷号同一请求重试：即使样本已有新版本，仍返回原卷
+    call("POST", "/events", {
+        "event_id": f"API-EVT2-T2-{run_id}", "event_type": "transfer", "sample_code": code2,
+        "occurred_at": "2026-09-30T06:00:00Z",
+        "transfer_no": "TR-DEMO-2B", "from_custodian": "王采集", "to_custodian": "李运输",
+    })
+    s, r = call("POST", "/dossiers", dossier_body)
+    print(f"\n--- 同案卷号同请求重试（样本已新增版本）[HTTP {s}] 幂等={r.get('idempotent')} ---")
+    print("清单仍封存原版本:", [(it["sample_code"], it["version"]) for it in r["dossier"]["items"]])
+
+    # 14.5) 同案卷号异内容 → 409 dossier_conflict
+    s, r = call("POST", "/dossiers", {
+        "dossier_id": dossier_id,
+        "items": [{"sample_code": code, "version": 1}, {"sample_code": code2}],
+    })
+    print("同案卷号异内容:", s, r.get("error", {}).get("code"))
+
+    # 14.6) 整卷失败：编号重复 / 版本不存在 → 不留案卷
+    s, r = call("POST", "/dossiers", {
+        "dossier_id": f"API-DOSSIER-BAD-{run_id}",
+        "items": [{"sample_code": code}, {"sample_code": code}],
+    })
+    print("编号重复整卷失败:", s, r.get("error", {}).get("code"))
+    s, r = call("POST", "/dossiers", {
+        "dossier_id": f"API-DOSSIER-BAD2-{run_id}",
+        "items": [{"sample_code": code, "version": 9999}, {"sample_code": code2}],
+    })
+    print("版本不存在整卷失败:", s, r.get("error", {}).get("code"),
+          "| 当前最新版本:", r.get("error", {}).get("details", {}).get("current_version"))
+    s, r = call("GET", f"/dossiers/API-DOSSIER-BAD-{run_id}")
+    print("失败不留案卷（查询 404）:", s, r.get("error", {}).get("code"))
+
 
 if __name__ == "__main__":
     main()
